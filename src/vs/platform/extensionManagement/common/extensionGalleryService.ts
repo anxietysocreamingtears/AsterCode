@@ -293,6 +293,11 @@ class Query {
 	}
 }
 
+function getConfiguredExtensionId(value: string | undefined): string | undefined {
+	const extensionId = value?.trim();
+	return extensionId ? extensionId : undefined;
+}
+
 function getStatistic(statistics: IRawGalleryExtensionStatistics[], name: string): number {
 	const result = (statistics || []).filter(s => s.statisticName === name)[0];
 	return result ? result.value : 0;
@@ -636,6 +641,10 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 			this.telemetryService);
 	}
 
+	private isAllowedExtension(extension: IGalleryExtension): boolean {
+		return this.allowedExtensionsService.isAllowed(extension) === true;
+	}
+
 	isEnabled(): boolean {
 		return this.extensionGalleryManifestService.extensionGalleryManifestStatus === ExtensionGalleryManifestStatus.Available;
 	}
@@ -777,6 +786,8 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 				if (isString(galleryExtension)) {
 					if (galleryExtension === 'BUILT_IN_LATEST_IS_OUTDATED') {
 						this.logService.debug(`Skipping query API fallback for auto-update builtin extension ${extensionInfo.id} because the latest gallery version is older than the product version`);
+					} else if (galleryExtension === 'NOT_ALLOWED') {
+						this.logService.debug(`Skipping blocked extension ${extensionInfo.id}`);
 					} else {
 						// fallback to query
 						this.telemetryService.publicLog2<
@@ -876,7 +887,8 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 			return 'NOT_COMPATIBLE';
 		}
 
-		return toExtension(rawGalleryExtension, rawGalleryExtensionVersion, allTargetPlatforms, extensionGalleryManifest, this.productService);
+		const extension = toExtension(rawGalleryExtension, rawGalleryExtensionVersion, allTargetPlatforms, extensionGalleryManifest, this.productService);
+		return this.isAllowedExtension(extension) ? extension : 'NOT_ALLOWED';
 	}
 
 	private async getValidRawGalleryExtensionVersionFromLatestVersions(rawGalleryExtension: IRawGalleryExtension, latestVersions: IRawGalleryExtensionVersion[], extensionInfo: IExtensionInfo, options: IExtensionQueryOptions, allTargetPlatforms: TargetPlatform[]): Promise<IRawGalleryExtensionVersion | null> {
@@ -957,11 +969,11 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 		if (isNotWebExtensionInWebTargetPlatform(extension.allTargetPlatforms, targetPlatform)) {
 			return null;
 		}
+		if (!this.isAllowedExtension(extension)) {
+			return null;
+		}
 		if (await this.isExtensionCompatible(extension, includePreRelease, targetPlatform)) {
 			return extension;
-		}
-		if (this.allowedExtensionsService.isAllowed({ id: extension.identifier.id, publisherDisplayName: extension.publisherDisplayName }) !== true) {
-			return null;
 		}
 		const result = await this.getExtensions([{
 			...extension.identifier,
@@ -1185,11 +1197,12 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 			const { extensions, total } = await this.queryGalleryExtensions(query, { targetPlatform: CURRENT_TARGET_PLATFORM, compatible: false, includePreRelease: !!options.includePreRelease, productVersion: options.productVersion ?? { version: this.productService.version, date: this.productService.date } }, extensionGalleryManifest, token);
 
 			const result: IGalleryExtension[] = [];
+			const defaultChatAgentExtensionId = getConfiguredExtensionId(this.productService.defaultChatAgent?.extensionId);
 			let defaultChatAgentExtension: IGalleryExtension | undefined;
 			for (let index = 0; index < extensions.length; index++) {
 				const extension = extensions[index];
 				setTelemetry(extension, ((query.pageNumber - 1) * query.pageSize) + index, options.source);
-				if (areSameExtensions(extension.identifier, { id: this.productService.defaultChatAgent.extensionId, })) {
+				if (defaultChatAgentExtensionId && areSameExtensions(extension.identifier, { id: defaultChatAgentExtensionId })) {
 					defaultChatAgentExtension = extension;
 				} else {
 					result.push(extension);
@@ -1263,7 +1276,10 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 					allTargetPlatforms
 				);
 				if (rawGalleryExtensionVersion) {
-					extensions.push(toExtension(rawGalleryExtension, rawGalleryExtensionVersion, allTargetPlatforms, extensionGalleryManifest, this.productService, context));
+					const extension = toExtension(rawGalleryExtension, rawGalleryExtensionVersion, allTargetPlatforms, extensionGalleryManifest, this.productService, context);
+					if (this.isAllowedExtension(extension)) {
+						extensions.push(extension);
+					}
 				}
 			}
 			return { extensions, total };
@@ -1299,6 +1315,9 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 				allTargetPlatforms
 			);
 			const extension = rawGalleryExtensionVersion ? toExtension(rawGalleryExtension, rawGalleryExtensionVersion, allTargetPlatforms, extensionGalleryManifest, this.productService, context) : null;
+			if (extension && !this.isAllowedExtension(extension)) {
+				continue;
+			}
 			if (!extension
 				/** Need all versions if the extension is a pre-release version but
 				 * 		- the query is to look for a release version or
@@ -2021,15 +2040,19 @@ export abstract class AbstractExtensionGalleryService implements IExtensionGalle
 			}
 		}
 
-		deprecated[this.productService.defaultChatAgent.extensionId.toLowerCase()] = {
-			disallowInstall: true,
-			extension: {
-				id: this.productService.defaultChatAgent.chatExtensionId,
-				displayName: 'GitHub Copilot Chat',
-				autoMigrate: { storage: false, donotDisable: true },
-				preRelease: this.productService.quality !== 'stable'
-			}
-		};
+		const defaultChatAgentExtensionId = getConfiguredExtensionId(this.productService.defaultChatAgent?.extensionId);
+		const defaultChatAgentChatExtensionId = getConfiguredExtensionId(this.productService.defaultChatAgent?.chatExtensionId);
+		if (defaultChatAgentExtensionId && defaultChatAgentChatExtensionId) {
+			deprecated[defaultChatAgentExtensionId.toLowerCase()] = {
+				disallowInstall: true,
+				extension: {
+					id: defaultChatAgentChatExtensionId,
+					displayName: 'GitHub Copilot Chat',
+					autoMigrate: { storage: false, donotDisable: true },
+					preRelease: this.productService.quality !== 'stable'
+				}
+			};
+		}
 
 		return { malicious, deprecated, search, autoUpdate };
 	}

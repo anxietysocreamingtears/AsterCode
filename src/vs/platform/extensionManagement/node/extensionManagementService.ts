@@ -154,7 +154,16 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 				throw new Error(nls.localize('incompatible', "Unable to install extension '{0}' as it is not compatible with VS Code '{1}'.", extensionId, this.productService.version));
 			}
 
-			const allowedToInstall = this.allowedExtensionsService.isAllowed({ id: extensionId, version: manifest.version, publisherDisplayName: undefined });
+			const allowedToInstall = this.allowedExtensionsService.isAllowed({
+				id: extensionId,
+				version: manifest.version,
+				publisherDisplayName: undefined,
+				displayName: manifest.displayName,
+				description: manifest.description,
+				categories: manifest.categories,
+				tags: manifest.keywords,
+				manifest
+			});
 			if (allowedToInstall !== true) {
 				throw new Error(nls.localize('notAllowed', "This extension cannot be installed because {0}", allowedToInstall.value));
 			}
@@ -179,6 +188,10 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 		if (!local || !local.manifest.name || !local.manifest.version) {
 			throw new Error(`Cannot find a valid extension from the location ${location.toString()}`);
 		}
+		const allowedToInstall = this.allowedExtensionsService.isAllowed(local);
+		if (allowedToInstall !== true) {
+			throw new Error(nls.localize('notAllowedFromLocation', "This extension cannot be installed because {0}", allowedToInstall.value));
+		}
 		await this.addExtensionsToProfile([[local, { source: 'resource' }]], profileLocation);
 		this.logService.info('Successfully installed extension', local.identifier.id, profileLocation.toString());
 		return local;
@@ -186,7 +199,9 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 
 	async installExtensionsFromProfile(extensions: IExtensionIdentifier[], fromProfileLocation: URI, toProfileLocation: URI): Promise<ILocalExtension[]> {
 		this.logService.trace('ExtensionManagementService#installExtensionsFromProfile', extensions, fromProfileLocation.toString(), toProfileLocation.toString());
-		const extensionsToInstall = (await this.getInstalled(ExtensionType.User, fromProfileLocation)).filter(e => extensions.some(id => areSameExtensions(id, e.identifier)));
+		const extensionsToInstall = (await this.getInstalled(ExtensionType.User, fromProfileLocation))
+			.filter(e => extensions.some(id => areSameExtensions(id, e.identifier)))
+			.filter(e => this.allowedExtensionsService.isAllowed(e) === true);
 		if (extensionsToInstall.length) {
 			const metadata = await Promise.all(extensionsToInstall.map(e => this.extensionsScanner.scanMetadata(e, fromProfileLocation)));
 			await this.addExtensionsToProfile(extensionsToInstall.map((e, index) => [e, metadata[index]]), toProfileLocation);

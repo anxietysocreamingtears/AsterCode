@@ -691,7 +691,7 @@ export interface IAllowedExtensionsService {
 	readonly onDidChangeAllowedExtensionsConfigValue: Event<void>;
 
 	isAllowed(extension: IGalleryExtension | IExtension): true | IMarkdownString;
-	isAllowed(extension: { id: string; publisherDisplayName: string | undefined; version?: string; prerelease?: boolean; targetPlatform?: TargetPlatform }): true | IMarkdownString;
+	isAllowed(extension: { id: string; publisherDisplayName: string | undefined; version?: string; prerelease?: boolean; targetPlatform?: TargetPlatform; displayName?: string; description?: string; categories?: readonly string[]; tags?: readonly string[]; manifest?: IExtensionManifest }): true | IMarkdownString;
 }
 
 export async function computeSize(location: URI, fileService: IFileService): Promise<number> {

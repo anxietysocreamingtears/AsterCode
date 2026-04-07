@@ -6,7 +6,7 @@
 import { Disposable } from '../../../base/common/lifecycle.js';
 import * as nls from '../../../nls.js';
 import { IGalleryExtension, AllowedExtensionsConfigKey, IAllowedExtensionsService, AllowedExtensionsConfigValueType } from './extensionManagement.js';
-import { ExtensionType, IExtension, TargetPlatform } from '../../extensions/common/extensions.js';
+import { ExtensionType, IExtension, IExtensionManifest, TargetPlatform } from '../../extensions/common/extensions.js';
 import { IProductService } from '../../product/common/productService.js';
 import { createCommandUri, IMarkdownString, MarkdownString } from '../../../base/common/htmlContent.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
@@ -23,6 +23,56 @@ function isIExtension(extension: unknown): extension is IExtension {
 
 
 const VersionRegex = /^(?<version>\d+\.\d+\.\d+(-.*)?)(@(?<platform>.+))?$/;
+const AIExtensionMessage = new MarkdownString(nls.localize('ai extensions disabled', "AI-related extensions are disabled in this build."));
+const AIContributionPoints = new Set([
+	'chatParticipants',
+	'chatPromptFiles',
+	'chatInstructions',
+	'chatAgents',
+	'chatSkills',
+	'chatPlugins',
+	'languageModelTools',
+	'languageModelToolSets'
+]);
+const AITextHints = [
+	/\bcopilot\b/u,
+	/\bchatgpt\b/u,
+	/\bopenai\b/u,
+	/\banthropic\b/u,
+	/\bclaude\b/u,
+	/\bgemini\b/u,
+	/\bgenerative ai\b/u,
+	/\blanguage model(?:s)?\b/u,
+	/\bllm\b/u,
+	/\bai\b/u
+];
+const ChatAssistantHints = /\b(prompt|assistant|agent)\b/u;
+
+type AllowedExtensionDescriptor = {
+	id: string;
+	publisherDisplayName: string | undefined;
+	version?: string;
+	prerelease?: boolean;
+	targetPlatform?: TargetPlatform;
+	displayName?: string;
+	description?: string;
+	categories?: readonly string[];
+	tags?: readonly string[];
+	manifest?: IExtensionManifest;
+};
+
+function normalizeValues(values: ReadonlyArray<string | undefined>): string[] {
+	const result: string[] = [];
+	for (const value of values) {
+		if (typeof value === 'string') {
+			const normalized = value.trim().toLowerCase();
+			if (normalized) {
+				result.push(normalized);
+			}
+		}
+	}
+	return result;
+}
 
 export class AllowedExtensionsService extends Disposable implements IAllowedExtensionsService {
 
@@ -64,7 +114,12 @@ export class AllowedExtensionsService extends Disposable implements IAllowedExte
 		return Object.fromEntries(entries);
 	}
 
-	isAllowed(extension: IGalleryExtension | IExtension | { id: string; publisherDisplayName: string | undefined; version?: string; prerelease?: boolean; targetPlatform?: TargetPlatform }): true | IMarkdownString {
+	isAllowed(extension: IGalleryExtension | IExtension | AllowedExtensionDescriptor): true | IMarkdownString {
+		const aiBlockedReason = this.getAIBlockedReason(extension);
+		if (aiBlockedReason) {
+			return aiBlockedReason;
+		}
+
 		if (!this._allowedExtensionsConfigValue) {
 			return true;
 		}
@@ -140,5 +195,38 @@ export class AllowedExtensionsService extends Disposable implements IAllowedExte
 		}
 
 		return extensionReason;
+	}
+
+	private getAIBlockedReason(extension: IGalleryExtension | IExtension | AllowedExtensionDescriptor): IMarkdownString | undefined {
+		const manifest = isGalleryExtension(extension) ? undefined : isIExtension(extension) ? extension.manifest : extension.manifest;
+		const categories = normalizeValues(isGalleryExtension(extension) ? extension.categories : isIExtension(extension) ? manifest?.categories ?? [] : manifest?.categories ?? extension.categories ?? []);
+		const tags = normalizeValues(isGalleryExtension(extension) ? extension.tags : isIExtension(extension) ? manifest?.keywords ?? [] : manifest?.keywords ?? extension.tags ?? []);
+		const searchText = normalizeValues([
+			isGalleryExtension(extension) ? extension.identifier.id : isIExtension(extension) ? extension.identifier.id : extension.id,
+			isGalleryExtension(extension) ? extension.name : manifest?.name,
+			isGalleryExtension(extension) ? extension.displayName : isIExtension(extension) ? extension.manifest.displayName : extension.displayName ?? manifest?.displayName,
+			isGalleryExtension(extension) ? extension.description : isIExtension(extension) ? extension.manifest.description : extension.description ?? manifest?.description,
+			isGalleryExtension(extension) ? extension.publisher : manifest?.publisher,
+			...categories,
+			...tags
+		]).join(' ');
+
+		if (categories.includes('ai') || tags.includes('ai')) {
+			return AIExtensionMessage;
+		}
+
+		if (manifest?.contributes && Object.keys(manifest.contributes).some(key => AIContributionPoints.has(key))) {
+			return AIExtensionMessage;
+		}
+
+		if (AITextHints.some(hint => hint.test(searchText))) {
+			return AIExtensionMessage;
+		}
+
+		if ((categories.includes('chat') || tags.includes('chat')) && ChatAssistantHints.test(searchText)) {
+			return AIExtensionMessage;
+		}
+
+		return undefined;
 	}
 }
