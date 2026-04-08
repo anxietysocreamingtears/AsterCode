@@ -184,6 +184,7 @@ import './contrib/performance/browser/performance.contribution.js';
 
 // Notebook
 import './contrib/notebook/browser/notebook.contribution.js';
+import './contrib/inlineChat/browser/inlineChat.stub.contribution.js';
 
 // Speech
 import './contrib/speech/browser/speech.contribution.js';
